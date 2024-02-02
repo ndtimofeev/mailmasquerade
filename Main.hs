@@ -39,6 +39,7 @@ data Config = Config
 	{ username :: String
 	, password :: String
 	, target :: String
+	, defaultReplyTo :: [Text]	-- addresses to send the mail to when we're unable to figure who the target is replying to
 	} deriving (Show, Generic)
 instance FromJSON Config where
 instance ToJSON Config where
@@ -144,9 +145,8 @@ handleNewMail conf mail = do
 	if isInternalMail conf mail
 	then do
 		addr <- replyDBFetch mail
-		fromMaybe mzero $ do
-			addr_ <- addr
-			Just $ tossMail conf (adjustMailReply mail (username conf) addr_) $ textToAddress addr_
+		let sendTo = maybe (defaultReplyTo conf) pure addr
+		mapM_ (\addr_ -> tossMail conf (adjustMailReply mail (username conf) addr_) $ textToAddress addr_) sendTo
 	else do
 		whitelisted <- checkIfWhitelisted $ fromJust $ getFromAddr $ fromJust $ parseMessage mail
 		when whitelisted $ do
