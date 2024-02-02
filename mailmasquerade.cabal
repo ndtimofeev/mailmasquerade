@@ -1,0 +1,35 @@
+cabal-version:      2.2
+name:               mailmasquerade
+version:            0
+synopsis:           proxies e-mail to a configurable address
+category:           Network
+license:            MIT
+author:             Sergey Alirzaev
+maintainer:         zl29ah@gmail.com
+build-type:         Simple
+tested-with:        GHC == 9.6.4
+
+Source-repository head
+  type:              git
+  location:          https://github.com/l29ah/mailmasquerade.git
+
+common stuff
+    ghc-options: -W -Wcompat -fno-warn-tabs
+    build-depends:      base ^>= 4.18.2.0
+                      , HaskellNet ^>= 0.6.1.2
+                      , HaskellNet-SSL ^>= 0.3.4.4
+                      , text ^>= 2.0.2
+                      , parsec ^>= 3.1.16.1
+                      , hsemail ^>= 2.2.1
+                      , bytestring ^>= 0.11.5.3
+                      , regex ^>= 1.1.0.2
+                      , string-class ^>= 0.1.7.1
+                      , containers ^>= 0.6.7
+                      , binary ^>= 0.8.9.0
+                      , directory ^>= 1.3.8.1
+                      , aeson ^>= 2.1.2.1
+    default-language:   Haskell2010
+
+executable mailmasquerade
+    import:             stuff
+    main-is:            Main.hs
