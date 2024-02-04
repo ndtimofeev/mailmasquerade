@@ -28,6 +28,7 @@ common stuff
                       , binary ^>= 0.8.9.0
                       , directory ^>= 1.3.8.1
                       , aeson ^>= 2.1.2.1
+                      , hslogger ^>= 1.3.1.0
     default-language:   Haskell2010
 
 executable mailmasquerade

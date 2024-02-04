@@ -27,6 +27,8 @@ import Network.HaskellNet.SMTP.SSL (doSMTPSSL)
 import qualified Network.HaskellNet.SMTP.SSL as SMTP
 import Network.Mail.Mime
 import System.Directory
+import System.Log.Logger
+import System.Log.Handler.Syslog
 import Text.Parsec (parse)
 import Text.Parsec.Rfc2822
 import Text.RE.TDFA.ByteString
@@ -47,11 +49,15 @@ instance ToJSON Config where
 
 configFile = "mailmasquerade.json"
 
+readConfig :: IO Config
 readConfig = fmap (either error id) $ JSON.eitherDecodeFileStrict configFile
 
 main :: IO ()
 main = do
+	s <- openlog "mailmasquerade" [PID] USER INFO
+	updateGlobalLogger rootLoggerName (addHandler s)
 	conf <- readConfig
+	infoM "" $ "Opened configuration file " ++ configFile
 	fetchMail conf
 
 nameAddrToAddress :: NameAddr -> Address
@@ -111,13 +117,12 @@ isInternalMail conf mail = let Right parsedMessage = parse message "<inbound>" m
 		from == (target conf)
 
 tossMail conf mail to = doSMTPSSL "smtp.yandex.ru" $ \conn -> do
-	print mail
 	authSuccess <- SMTP.authenticate PLAIN (username conf) (password conf) conn
 	if not authSuccess then error "authentication failed" else do
 		sendMailData (Address Nothing $ T.pack $ username conf) [to] mail conn
 
 fetchMail conf = do
-	forever $ handle (\e -> print (e :: IOException)) $ do
+	forever $ handle (\e -> errorM "" $ show (e :: IOException)) $ do
 		conn <- connectIMAPSSL "imap.yandex.ru"
 		login conn (username conf) (password conf)
 		forever $ do
@@ -164,13 +169,13 @@ replyDBRead = catch (do
 		replyDBBinary <- BL.readFile replyDBFile
 		pure $ decode replyDBBinary
 	) $ \e -> do
-		print (e :: IOException)
+		errorM "" $ show (e :: IOException)
 		pure mempty
 
 replyDBWrite :: ReplyDB -> IO ()
 replyDBWrite replyDB = do
 	BL.writeFile replyDBTemporaryFile $ encode replyDB
-	catch (renameFile replyDBFile replyDBBackupFile) $ \e -> print (e :: IOException)
+	catch (renameFile replyDBFile replyDBBackupFile) $ \e -> errorM "" $ show (e :: IOException)
 	renameFile replyDBTemporaryFile replyDBFile
 
 replyDBFetch :: ByteString -> IO (Maybe Text)
