@@ -1,0 +1,15 @@
+#!/sbin/openrc-run
+# Copyright 2024 Gentoo Authors
+# Distributed under the terms of the GNU General Public License v2
+
+name="mailmasquerade daemon"
+description=""
+command=/usr/bin/mailmasquerade
+command_args="${mailmasquerade_args}"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+directory=/var/db/mailmasquerade
+
+depend() {
+	need net
+}
