@@ -71,12 +71,14 @@ textToAddress :: Text -> Address
 textToAddress str = nameAddrToAddress $ fromRight (error "couldn't parse a stored address unexpectedly") $ parse mailbox "<address>" str
 
 -- there are no compatible e-mail parsers and serializers, apparently, so regex seems like an optimal option for header modification
-adjustMailForForwarding mail from to = mail
+purgeReplyTo s = s *=~/ (fromJust $ compileSearchReplaceWith MultilineInsensitive "^reply-to:.*\n" "")
+
+adjustMailForForwarding mail from to = purgeReplyTo $ mail
 	?=~/ (fromJust $ compileSearchReplaceWith MultilineInsensitive "^from: (.*)$" ("X-Original-From: $1\nFrom: " ++ (S.fromString $ S.toString from)))
 	?=~/ (fromJust $ compileSearchReplaceWith MultilineInsensitive "^to: (.*)$" ("X-Original-To: $1\nTo: " ++ (S.fromString $ S.toString to)))
 
 adjustMailReply :: ByteString -> String -> Text -> ByteString
-adjustMailReply mail from to = mail
+adjustMailReply mail from to = purgeReplyTo $ mail
 	?=~/ (fromJust $ compileSearchReplaceWith MultilineInsensitive "^from: (.*)$" ("From: " ++ (fromString from)))
 	?=~/ (fromJust $ compileSearchReplaceWith MultilineInsensitive "^to: (.*)$" ("To: " ++ (S.fromString $ S.toString to)))
 
