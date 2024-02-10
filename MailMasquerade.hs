@@ -42,7 +42,7 @@ type ReplyDB = Map Text Text
 
 data Arguments f = Arguments
 	{ verbose :: f ::: Bool   <#> "v" <?> "More logs"
-	, stdout  :: f ::: Bool   <#> "s" <?> "Put log to stdout"
+	, stdout  :: f ::: Bool   <#> "s" <?> "Put log to stdout only"
 	, config  :: f ::: String <#> "c" <?> "Path to config file"
 	} deriving Generic
 
@@ -53,25 +53,24 @@ data Config = Config
 	{ username :: String
 	, password :: String
 	, target :: String
+	, whitelist :: [Text]
 	, defaultReplyTo :: [Text]	-- addresses to send the mail to when we're unable to figure who the target is replying to
 	} deriving (Show, Generic)
 instance FromJSON Config where
 instance ToJSON Config where
 	toEncoding = JSON.genericToEncoding JSON.defaultOptions
 
-configFile = "mailmasquerade.json"
-
-readConfig :: IO Config
-readConfig = fmap (either error id) $ JSON.eitherDecodeFileStrict configFile
-
 main :: IO ()
 main = do
-	x <- unwrapRecord "MailMasquerade"
-	print (x :: Arguments Unwrapped)
-	s <- openlog "mailmasquerade" [PID] USER INFO
-	updateGlobalLogger rootLoggerName (addHandler s)
-	conf <- readConfig
-	infoM "" $ "Opened configuration file " ++ configFile
+	args <- unwrapRecord "MailMasquerade"
+	when (verbose args) $ do
+		updateGlobalLogger rootLoggerName (setLevel INFO)
+		infoM "" $ "Set verbose mode"
+	when (not (stdout args)) $ do
+		s <- openlog "mailmasquerade" [PID] USER INFO
+		updateGlobalLogger rootLoggerName (addHandler s)
+	conf <- either error id <$> JSON.eitherDecodeFileStrict (config args)
+	infoM "" $ "Opened configuration file " ++ config args
 	fetchMail conf
 
 nameAddrToAddress :: NameAddr -> Address
