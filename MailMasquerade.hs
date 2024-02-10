@@ -1,4 +1,4 @@
-{-# LANGUAGE Strict, OverloadedStrings, DeriveGeneric #-}
+{-# LANGUAGE FlexibleInstances, StandaloneDeriving, Strict, TypeOperators, DataKinds, OverloadedStrings, DeriveGeneric #-}
 module MailMasquerade where
 
 import Control.Exception
@@ -29,6 +29,7 @@ import Network.HaskellNet.SMTP
 import Network.HaskellNet.SMTP.Internal
 import Network.HaskellNet.SMTP.SSL (doSMTPSSL)
 import qualified Network.HaskellNet.SMTP.SSL as SMTP
+import Options.Generic
 import System.Directory
 import System.Log.Logger
 import System.Log.Handler.Syslog
@@ -38,6 +39,15 @@ import Text.Parsec.Rfc2822
 -- a map from Message-IDs to sender addresses
 -- populated by every message coming from the outside world
 type ReplyDB = Map Text Text
+
+data Arguments f = Arguments
+	{ verbose :: f ::: Bool   <#> "v" <?> "More logs"
+	, stdout  :: f ::: Bool   <#> "s" <?> "Put log to stdout"
+	, config  :: f ::: String <#> "c" <?> "Path to config file"
+	} deriving Generic
+
+instance ParseRecord (Arguments Wrapped)
+deriving instance Show (Arguments Unwrapped)
 
 data Config = Config
 	{ username :: String
@@ -56,6 +66,8 @@ readConfig = fmap (either error id) $ JSON.eitherDecodeFileStrict configFile
 
 main :: IO ()
 main = do
+	x <- unwrapRecord "MailMasquerade"
+	print (x :: Arguments Unwrapped)
 	s <- openlog "mailmasquerade" [PID] USER INFO
 	updateGlobalLogger rootLoggerName (addHandler s)
 	conf <- readConfig
