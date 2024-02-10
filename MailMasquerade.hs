@@ -1,3 +1,4 @@
+
 {-# LANGUAGE FlexibleInstances, StandaloneDeriving, Strict, TypeOperators, DataKinds, OverloadedStrings, DeriveGeneric #-}
 module MailMasquerade where
 
@@ -22,6 +23,7 @@ import Data.String
 import qualified Data.String.Class as S
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 import GHC.Generics
 import Network.HaskellNet.IMAP
 import Network.HaskellNet.IMAP.SSL (connectIMAPSSL)
@@ -50,10 +52,10 @@ instance ParseRecord (Arguments Wrapped)
 deriving instance Show (Arguments Unwrapped)
 
 data Config = Config
-	{ username :: String
-	, password :: String
-	, target :: String
-	, whitelist :: [Text]
+	{ username       :: String
+	, password       :: String
+	, target         :: String
+	, whitelist      :: [Text]
 	, defaultReplyTo :: [Text]	-- addresses to send the mail to when we're unable to figure who the target is replying to
 	} deriving (Show, Generic)
 instance FromJSON Config where
@@ -158,14 +160,8 @@ grabNewMail conf conn = do
 	--putStrLn $ "Unseen message IDs: " ++ show msgs
 	forM_ msgs (fetch conn >=> handleNewMail conf)
 
--- \n-delimited addresses
--- doesn't handle \r
-whitelistFile = "whitelist.txt"
-
-checkIfWhitelisted :: ByteString -> IO Bool
-checkIfWhitelisted addr = do
-	whitelistContents <- B.readFile whitelistFile
-	pure $ elem addr $ B.lines whitelistContents
+checkIfWhitelisted :: Config -> Text -> IO Bool
+checkIfWhitelisted conf addr = pure (addr `elem` whitelist conf)
 
 handleNewMail :: Config -> ByteString -> IO ()
 handleNewMail conf mail = do
@@ -178,7 +174,7 @@ handleNewMail conf mail = do
 				let sendTo = maybe (defaultReplyTo conf) pure addr
 				mapM_ (\addr_ -> tossMail conf (adjustMailReply parsedMail (username conf) addr_) $ textToAddress addr_) sendTo
 			else do
-				whitelisted <- checkIfWhitelisted $ fromJust $ getFromAddr $ fromJust $ parseMessage mail
+				whitelisted <- checkIfWhitelisted conf $ T.decodeLatin1 $ fromJust $ getFromAddr $ fromJust $ parseMessage mail
 				when whitelisted $ do
 					tossMail conf (adjustMailForForwarding parsedMail (username conf) (target conf)) $ Address Nothing $ T.pack $ target conf
 					replyDBAdd mail
