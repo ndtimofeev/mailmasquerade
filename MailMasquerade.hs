@@ -1,9 +1,11 @@
-
 {-# LANGUAGE FlexibleInstances, StandaloneDeriving, Strict, TypeOperators, DataKinds, OverloadedStrings, DeriveGeneric #-}
 module MailMasquerade where
 
+import Control.Applicative
 import Control.Exception
+import Control.Lens hiding ( Wrapped, Unwrapped )
 import Control.Monad
+import qualified Control.Monad.State as MS
 import Data.Aeson (FromJSON, ToJSON, toEncoding)
 import qualified Data.Aeson as JSON
 import Data.Binary
@@ -49,16 +51,21 @@ data Arguments f = Arguments
 	} deriving Generic
 
 instance ParseRecord (Arguments Wrapped)
+
 deriving instance Show (Arguments Unwrapped)
 
 data Config = Config
-	{ username       :: String
+	{ imapServer     :: String
+	, smtpServer     :: String
+	, username       :: String
 	, password       :: String
 	, target         :: String
 	, whitelist      :: [Text]
 	, defaultReplyTo :: [Text]	-- addresses to send the mail to when we're unable to figure who the target is replying to
 	} deriving (Show, Generic)
+
 instance FromJSON Config where
+
 instance ToJSON Config where
 	toEncoding = JSON.genericToEncoding JSON.defaultOptions
 
@@ -85,15 +92,14 @@ nameAddrToText (NameAddr name addr) = T.pack $ (maybe "" (\n -> n ++ " ") name) 
 textToAddress :: Text -> Address
 textToAddress str = nameAddrToAddress $ fromRight (error "couldn't parse a stored address unexpectedly") $ parse mailbox "<address>" str
 
-purgeReplyTo :: [PB.Header] -> [PB.Header]
-purgeReplyTo = L.deleteBy (on (==) fst) ("reply-to", undefined)
+adjustMailReply msg from to = flip MS.execState msg $ do
+	msgids <- use PB.headerInReplyTo
+	modifying PB.headerReferences (\refs -> L.nub (msgids ++ refs))
+	modifying (PB.headerReplyTo PB.defaultCharsets) (const [])
+	modifying (PB.headerFrom PB.defaultCharsets) (const [PB.Single (fromString from)])
+	modifying (PB.headerTo PB.defaultCharsets) (const [PB.Single (fromString $ S.toString to)])
+--	modifying (PB.headerMessageID) (const Nothing)
 
-adjustMailReply (PB.Message (PB.Headers headers) body) from to = PB.renderMessage $ PB.Message (PB.Headers $ map
-	(\(k, v) -> case () of _
-				| k == "from" -> (k, fromString from)
-				| k == "to" -> (k, S.fromString $ S.toString to)
-				| otherwise -> (k, v)
-	) $ purgeReplyTo headers) body
 
 adjustMailForForwarding :: (PB.RenderMessage a) => PB.Message s2 a -> String -> String -> BL.ByteString
 adjustMailForForwarding (PB.Message (PB.Headers headers) body) from to = PB.renderMessage $ PB.Message (PB.Headers $
@@ -119,63 +125,66 @@ getFromAddr = listToMaybe . mapMaybe (\x -> case x of
 		_ -> Nothing
 	)
 
-getInReplyTo :: [Field] -> Maybe Text
-getInReplyTo = listToMaybe . mapMaybe (\x -> case x of
-		InReplyTo [str] -> Just $ fromString str
-		_ -> Nothing
-	)
-
 getMessageID :: [Field] -> Maybe Text
 getMessageID = listToMaybe . mapMaybe (\x -> case x of
 		MessageID str -> Just $ fromString str
 		_ -> Nothing
 	)
 
-isInternalMail :: Config -> ByteString -> Bool
-isInternalMail conf mail = let Right parsedMessage = parse message "<inbound>" mail in
-	let (Message headers _) = parsedMessage in
-	let NameAddr _ from = head $ mapMaybe (\x -> case x of
-			From x -> Just $ head x
-			_ -> Nothing
-		) headers in
-		from == (target conf)
-
-tossMail conf mail to = doSMTPSSL "smtp.yandex.ru" $ \conn -> do
+tossMail conf mail to = doSMTPSSL (smtpServer conf) $ \conn -> do
 	authSuccess <- SMTP.authenticate PLAIN (username conf) (password conf) conn
-	if not authSuccess then error "authentication failed" else do
-		sendMailData (Address Nothing $ T.pack $ username conf) [to] (BL.toStrict mail) conn
+	when (not authSuccess) $ error "authentication failed"
+	sendMailData (Address Nothing $ T.pack $ username conf) [to] (BL.toStrict mail) conn
 
 fetchMail conf = do
 	forever $ handle (\e -> errorM "" $ show (e :: IOException)) $ do
-		conn <- connectIMAPSSL "imap.yandex.ru"
+		conn <- connectIMAPSSL (imapServer conf)
 		login conn (username conf) (password conf)
 		forever $ do
 			grabNewMail conf conn
 			idle conn $ 1000 * 60 * 29	-- rfc9051
-			putStrLn "got new mail maybe"
+			infoM "" $ "got new mail maybe"
 
 grabNewMail conf conn = do
 	select conn "INBOX"
 	msgs <- search conn [UNFLAG Seen]
-	--putStrLn $ "Unseen message IDs: " ++ show msgs
+	infoM "" $ "Unseen message IDs: " ++ show msgs
 	forM_ msgs (fetch conn >=> handleNewMail conf)
 
 checkIfWhitelisted :: Config -> Text -> IO Bool
 checkIfWhitelisted conf addr = pure (addr `elem` whitelist conf)
 
+
+addrToSpec addr = case addr of
+	PB.Single mbox   -> [mailboxToSpec mbox]
+	PB.Group _ mboxs -> map mailboxToSpec mboxs
+
+mailboxToSpec (PB.Mailbox _ spec) = spec
+
 handleNewMail :: Config -> ByteString -> IO ()
 handleNewMail conf mail = do
+	infoM "" $ "Lets handle new mail!"
 	case PB.parse (PB.message PB.mime) mail of
 		Left e -> errorM "" $ show e
-		Right parsedMail -> do
-			if isInternalMail conf mail
+		Right parsedMail@(PB.Message (PB.Headers hdrs) _) -> do
+			infoM "" $ unlines $ map show hdrs
+			let fromAddrs  = concatMap addrToSpec $ view (PB.headerFrom PB.defaultCharsets) parsedMail
+			let targetAddr = mailboxToSpec $ fromString $ target conf
+			if targetAddr `elem` fromAddrs
 			then do
-				addr <- replyDBFetch mail
-				let sendTo = maybe (defaultReplyTo conf) pure addr
-				mapM_ (\addr_ -> tossMail conf (adjustMailReply parsedMail (username conf) addr_) $ textToAddress addr_) sendTo
+				infoM "" $ "This is remote mail"
+				maddr <- replyDBFetch parsedMail
+				let sendTo = maybe (defaultReplyTo conf) pure maddr
+				infoM "" $ "Let send mail to " ++ show sendTo
+				mapM_ (\addr_ -> do
+					let newMail@(PB.Message (PB.Headers hdrs) _) = adjustMailReply parsedMail (username conf) addr_
+					infoM "" $ unlines $ map show hdrs
+					tossMail conf (PB.renderMessage newMail) $ textToAddress addr_) sendTo
 			else do
 				whitelisted <- checkIfWhitelisted conf $ T.decodeLatin1 $ fromJust $ getFromAddr $ fromJust $ parseMessage mail
 				when whitelisted $ do
+					infoM "" $ "This is local mail"
+					infoM "" $ "Let send mail to " ++ target conf
 					tossMail conf (adjustMailForForwarding parsedMail (username conf) (target conf)) $ Address Nothing $ T.pack $ target conf
 					replyDBAdd mail
 				pure ()
@@ -199,19 +208,18 @@ replyDBWrite replyDB = do
 	catch (renameFile replyDBFile replyDBBackupFile) $ \e -> errorM "" $ show (e :: IOException)
 	renameFile replyDBTemporaryFile replyDBFile
 
-replyDBFetch :: ByteString -> IO (Maybe Text)
+replyDBFetch :: PB.Message ctx a -> IO (Maybe Text)
 replyDBFetch mail = do
 	replyDB <- replyDBRead
-	pure $ do
-		headers <- parseMessage mail
-		mid <- getInReplyTo headers
-		Map.lookup mid replyDB
+	infoM "" $ "InReplyTo: " ++ show (view PB.headerInReplyTo mail)
+	infoM "" $ "References: " ++ show (view PB.headerReferences mail)
+	pure $ asum $ map (\mid -> Map.lookup (T.decodeLatin1 (PB.renderMessageID mid)) replyDB) $ L.nub $ view PB.headerInReplyTo mail ++ view PB.headerReferences mail
 
 replyDBAdd :: ByteString -> IO ()
 replyDBAdd mail = do
 	replyDB <- replyDBRead
 	fromMaybe mzero $ do
 		headers <- parseMessage mail
-		addr <- getFrom headers
-		mid <- getMessageID headers
+		addr    <- getFrom headers
+		mid     <- getMessageID headers
 		Just $ replyDBWrite $ Map.insert mid addr replyDB
