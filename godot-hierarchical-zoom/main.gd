@@ -353,8 +353,13 @@ func _fly_to(target: Array, l1: float, duration := -1.0) -> void:
 	var u := profile.u_of(view.log_z)
 	var u1 := profile.u_of(l1)
 	var start := view.pos_at(view.size * 0.5)
-	var dist_px := view.screen(target[0], target[1], target[2], target[3]).distance_to(view.size * 0.5)
-	var bump := maxf(0.0, log(dist_px / view.size.x) / ZoomProfile.STEP * 0.8)
+	# «Подъём» камеры нужен, только если цель не видна даже на более отдалённом из двух
+	# масштабов (начального и конечного). Расстояние считаем именно там, иначе при выходе
+	# из боя к системе (цель за миллионы пикселей на масштабе боя) перелёт взлетал бы
+	# до глобального уровня и возвращался обратно.
+	var dist_now := view.screen(target[0], target[1], target[2], target[3]).distance_to(view.size * 0.5)
+	var dist_px := dist_now * exp(view.log_z - maxf(view.log_z, l1))
+	var bump := maxf(0.0, log(maxf(dist_px, 1.0) / view.size.x) / ZoomProfile.STEP * 0.8)
 	# веса движения фокуса: интеграл z(s) ds, нормированный
 	var w := PackedFloat64Array([0.0])
 	var n := 64
