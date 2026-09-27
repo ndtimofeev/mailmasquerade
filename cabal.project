@@ -1,0 +1,12 @@
+packages: .
+
+-- Временно тянем HaskellNet прямо из git: на релизной 0.6.2 с Hackage `fetch`
+-- всё ещё гоняет тело письма через String/packrat-парсер (см. Parsers.hs pFetch),
+-- из-за чего письма с большими вложениями вызывают огромный пик памяти при разборе
+-- FETCH-ответа. В master эта ветка переписана на fetchByByteString/getFetchResponseBS,
+-- которая читает литералы сразу как ByteString (bsGet), минуя packrat.
+-- TODO: снять этот пин и вернуться на Hackage, когда фикс попадёт в релиз.
+source-repository-package
+  type: git
+  location: https://github.com/qnikst/HaskellNet.git
+  tag: ad40209026e92eae1efc9819d94a2cc756dc4d54

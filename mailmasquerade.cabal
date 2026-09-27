@@ -16,7 +16,9 @@ Source-repository head
 common stuff
     ghc-options: -W -Wcompat -fno-warn-tabs
     build-depends:      base >= 4 && < 5
-                      , HaskellNet ^>= 0.6.1.2
+                      -- pinned to a post-0.6.2 git commit via cabal.project (source-repository-package):
+                      -- fixes a memory blowup in `fetch` on large-attachment mail, see cabal.project for details
+                      , HaskellNet ^>= 0.6.2
                       , HaskellNet-SSL ^>= 0.3.4.4
                       , text >= 1.2.4.1 && < 2.1
                       , bytestring >= 0.10.12.1 && < 0.12
