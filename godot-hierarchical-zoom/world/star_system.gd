@@ -117,7 +117,11 @@ func update(view: View, star_px_per_g: float, size_max: float) -> void:
 	set_alpha(&"dust", a * Space.ramp(l, -13.5, -10.5))
 	var pa := Space.ramp(sys_px, 140.0, 320.0)
 	var sun_screen := screen(view)
+	var built := false
 	for p in planets:
+		if p.pixel == null and not built:
+			p.build_pixel()
+			built = true
 		p.update(view, sun_screen, pa)
 
 	var b := 0.0

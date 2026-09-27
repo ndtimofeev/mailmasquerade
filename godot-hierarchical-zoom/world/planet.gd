@@ -10,7 +10,9 @@ var lx := 0.0                 # положение в системе, ед. си
 var lz := 0.0
 var true_r := 0.0             # настоящий радиус, ед. системы
 var icon_px := 24.0           # диаметр иконки на карте системы
-var pixel: PixelBody
+var pixel: PixelBody = null      # строится лениво (по одной планете за кадр)
+var _seed := 0
+var _recolor := false
 
 
 func _init(sys: Space, lx_: float, lz_: float, kind_: String, radius_km: float, icon: float,
@@ -28,13 +30,22 @@ func _init(sys: Space, lx_: float, lz_: float, kind_: String, radius_km: float, 
 	top_level = true
 	true_r = radius_km / StarSystem.KM_PER_UNIT
 	icon_px = icon
-	pixel = PixelBody.new(kind, body_seed, recolor)
+	_seed = body_seed
+	_recolor = recolor
+
+
+## Создание пиксельной планеты (SubViewport + сцена генератора) — самая дорогая часть
+## системы, поэтому StarSystem вызывает это не больше раза за кадр.
+func build_pixel() -> void:
+	pixel = PixelBody.new(kind, _seed, _recolor)
 	pixel.position.y = -0.001
 	add_child(pixel)
 
 
 func update(view: View, sun_screen: Vector2, alpha: float) -> void:
 	place(view)
+	if pixel == null:
+		return
 	pixel.set_radius(display_r(view))
 	pixel.set_light_dir(sun_screen - screen(view))
 	pixel.set_alpha(alpha)
