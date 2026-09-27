@@ -111,6 +111,8 @@ func _update_systems(sys_px: float) -> void:
 			systems[i] = StarSystem.new(s)
 			add_child(systems[i])
 		elif systems.has(i) and (sys_px < 40.0 or not on_screen):
+			if systems[i].battle != null:
+				systems[i].battle.queue_free()
 			systems[i].queue_free()
 			systems.erase(i)
 
