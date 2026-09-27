@@ -21,6 +21,7 @@ import Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe
 import qualified Data.MIME as PB
+import qualified Data.Text as Text
 import qualified Data.Text.Encoding as T
 import GHC.Generics
 import Network.HaskellNet.IMAP
@@ -119,6 +120,11 @@ getFromAddrs :: PB.Message ctx a -> [PB.AddrSpec]
 getFromAddrs mail = concatMap addrToSpec $ view (PB.headerFrom PB.defaultCharsets) mail
 
 
+isPing :: PB.Message ctx a -> Bool
+isPing mail = maybe False ((== "ping") . Text.toCaseFold . Text.strip)
+	$ view (PB.headerSubject PB.defaultCharsets) mail
+
+
 tossMail :: Config PB.AddrSpec -> BL.ByteString -> Address -> IO ()
 tossMail conf mail to = doSMTPSSL (smtpServer conf) $ \conn -> do
 	authSuccess <- SMTP.authenticate PLAIN (specToString $ username conf) (password conf) conn
@@ -163,7 +169,15 @@ handleNewMail conf mail = do
 		Right parsedMail@(PB.Message (PB.Headers hdrs) _) -> do
 			infoM "" $ unlines $ map show hdrs
 			let fromAddrs  = getFromAddrs parsedMail
-			if	| target conf `elem` fromAddrs -> do
+			if	| Just spec <- listToMaybe fromAddrs
+				, spec `elem` whitelist conf
+				, isPing parsedMail -> do
+					infoM "" $ "Got a PING from " ++ specToString spec ++ ", ponging back"
+					let pong = set (PB.headerSubject PB.defaultCharsets) (Just "PONG")
+						     $ adjustMailForForwarding parsedMail (username conf) spec
+					tossMail conf (PB.renderMessage pong) $ specToAddress spec
+
+				| target conf `elem` fromAddrs -> do
 					infoM "" $ "This is remote mail"
 					maddr <- replyDBFetch parsedMail
 					let sendTo = maybe (defaultReplyTo conf) pure maddr
