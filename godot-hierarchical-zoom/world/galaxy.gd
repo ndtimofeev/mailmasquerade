@@ -288,7 +288,7 @@ func _build_lanes(rng: RandomNumberGenerator) -> void:
 				continue
 			var same := faction[a] >= 0 and faction[a] == faction[b]
 			var col: Color = Color(FACTIONS[faction[a]], 0.55) if same else Color(0.55, 0.65, 0.8, 0.4)
-			lanes.line(Vector2(gx[a], gz[a]), Vector2(gx[b], gz[b]), Ribbons.TRASSA, 0.0, 0.0 if same else 1.0, col)
+			lanes.line(Vector2(gx[a], gz[a]), Vector2(gx[b], gz[b]), Ribbons.TRASSA, minf(mag[a], mag[b]), 0.0 if same else 1.0, col)
 
 	var hubs := PackedInt32Array()
 	for i in gx.size():
@@ -332,10 +332,12 @@ func query(rect: Rect2) -> PackedInt32Array:
 	return out
 
 
-func nearest(x: float, z: float, max_d: float) -> int:
+func nearest(x: float, z: float, max_d: float, min_mag := -1.0) -> int:
 	var best := -1
 	var best_d := max_d
 	for i in query(Rect2(x - max_d, z - max_d, max_d * 2.0, max_d * 2.0)):
+		if mag[i] < min_mag:
+			continue
 		var d := sqrt((gx[i] - x) ** 2 + (gz[i] - z) ** 2)
 		if d < best_d:
 			best_d = d
@@ -348,7 +350,9 @@ func update(view: View, size_max: float, stars_visible: bool) -> void:
 	var ppg := view.px(1.0)
 	star_mat.set_shader_parameter(&"px_per_g", ppg)
 	star_mat.set_shader_parameter(&"size_max", size_max)
+	star_mat.set_shader_parameter(&"mag_cut", StarIcons.mag_cut(ppg))
 	lane_mat.set_shader_parameter(&"px_per_g", ppg)
+	lane_mat.set_shader_parameter(&"mag_cut", StarIcons.mag_cut(ppg))
 	# зазор у концов трассы — по типичному размеру звезды на этом масштабе
 	lane_mat.set_shader_parameter(&"end_gap_px", StarIcons.size_px(40.0, 0.5, ppg, size_max) * 0.7 + 3.0)
 	_stars_mi.visible = stars_visible

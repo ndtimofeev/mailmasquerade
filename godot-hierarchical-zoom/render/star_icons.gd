@@ -57,4 +57,12 @@ static func build(positions: PackedVector2Array, custom: PackedFloat32Array, mat
 
 ## Тот же расчёт размера, что в шейдере, — для подписей и выбора мышью.
 static func size_px(nn: float, mag: float, px_per_g: float, size_max: float) -> float:
-	return clampf(0.9 * sqrt(nn * px_per_g), 1.0, size_max) * lerpf(0.6, 1.5, mag)
+	var base := 0.9 * sqrt(nn * px_per_g)
+	return clampf(base, 1.0, size_max) * lerpf(0.6, 1.5, mag) * lerpf(0.55, 1.0, clampf((base - 1.0) / 2.0, 0.0, 1.0))
+
+
+## Предельная величина для текущего масштаба: в глобальном обзоре остаются только
+## заметные звёзды, при приближении постепенно проявляются все.
+static func mag_cut(px_per_g: float) -> float:
+	var spacing_px := px_per_g * 40.0          # типичное расстояние между соседями на экране
+	return 0.55 * (1.0 - smoothstep(4.0, 18.0, spacing_px))

@@ -29,6 +29,7 @@ var _drag := false
 var _press := Vector2.ZERO
 var _moved := false
 var _flight := {}
+var _lock_until := 0.0              # до этого момента (с) ввод зума игнорируется
 var _label_a := {}                  # звезда -> текущая прозрачность подписи (плавное появление)
 
 var _labels: Array[Label] = []
@@ -88,6 +89,8 @@ func _update_view(delta: float) -> void:
 		_fly_step(delta)
 		return
 	var keys := float(Input.is_physical_key_pressed(KEY_E)) - float(Input.is_physical_key_pressed(KEY_Q))
+	if _input_locked():
+		keys = 0.0
 	if keys != 0.0:
 		goal_u += keys * 6.0 * delta
 		_begin_zoom(view.size * 0.5, keys > 0.0)
@@ -155,7 +158,8 @@ func _attractor(p: Vector2, gap: Vector2) -> Dictionary:
 	var radius := view.size.y * 0.35
 	if gap == ZoomProfile.GAP_A:
 		var g := view.pos_at(p)
-		var i := galaxy.nearest(g[0] + g[2], g[1] + g[3], radius * view.z() / view.px_per_unit())
+		var i := galaxy.nearest(g[0] + g[2], g[1] + g[3], radius * view.z() / view.px_per_unit(),
+			StarIcons.mag_cut(view.px(1.0)) + 0.06)
 		if i < 0:
 			return {}
 		return {"pos": [galaxy.gx[i], galaxy.gz[i], 0.0, 0.0], "l": log(_fit(StarSystem.RADIUS * StarSystem.UNIT))}
@@ -195,12 +199,22 @@ func _update_context() -> void:
 
 # ================================================================ ввод
 
+## Пока идёт перелёт между уровнями и ещё 0,5 с после него, события скролла, жестов
+## и кликов поглощаются: инерционная прокрутка колеса/тачпада не должна ни сбивать
+## анимацию, ни сразу после неё запускать следующий зум.
+func _input_locked() -> bool:
+	return not _flight.is_empty() or Time.get_ticks_msec() * 0.001 < _lock_until
+
+
 func _unhandled_input(event: InputEvent) -> void:
+	if _input_locked() and (event is InputEventMouseButton or event is InputEventMouseMotion
+			or event is InputEventGesture or event.is_action(&"ui_cancel")):
+		get_viewport().set_input_as_handled()
+		_drag = false
+		return
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
-			if not _flight.is_empty():
-				return                      # во время перелёта колесо не мешает анимации
 			var zoom_in := mb.button_index == MOUSE_BUTTON_WHEEL_UP
 			goal_u += 1.0 if zoom_in else -1.0
 			_begin_zoom(mb.position, zoom_in)
@@ -254,7 +268,8 @@ func _pick(p: Vector2) -> Dictionary:
 			return {"title": system.title, "pos": system.pos(0, 0), "l": log(_fit(StarSystem.RADIUS * StarSystem.UNIT)), "r_px": 12.0, "screen": ss}
 		return {}
 	var g := view.pos_at(p)
-	var i := galaxy.nearest(g[0] + g[2], g[1] + g[3], 14.0 * view.z() / view.px_per_unit())
+	var i := galaxy.nearest(g[0] + g[2], g[1] + g[3], 14.0 * view.z() / view.px_per_unit(),
+		StarIcons.mag_cut(view.px(1.0)) + 0.06)
 	if i < 0:
 		return {}
 	var sp := view.screen(galaxy.gx[i], galaxy.gz[i])
@@ -323,6 +338,7 @@ func _fly_step(delta: float) -> void:
 	view.dz = lerpf(az_, bz_, w)
 	if f.t >= f.T:
 		_flight = {}
+		_lock_until = Time.get_ticks_msec() * 0.001 + 0.5
 
 
 # ================================================================ подписи и HUD
@@ -348,6 +364,7 @@ func _draw_labels(size_max: float) -> void:
 		else:
 			cand = galaxy.by_mag
 		var checked := 0
+		var cut := StarIcons.mag_cut(ppg)
 		for i in cand:
 			if placed.size() >= MAX_LABELS or checked > 3000:
 				break
@@ -355,6 +372,8 @@ func _draw_labels(size_max: float) -> void:
 			if not screen.has_point(sp):
 				continue
 			checked += 1
+			if galaxy.mag[i] < cut + 0.1:
+				continue
 			var s := StarIcons.size_px(galaxy.nn[i], galaxy.mag[i], ppg, size_max)
 			if s < 3.2 and i != context_star:
 				continue

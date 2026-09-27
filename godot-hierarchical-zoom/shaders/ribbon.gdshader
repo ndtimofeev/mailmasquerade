@@ -5,6 +5,7 @@ render_mode unshaded, blend_add, depth_draw_never, cull_disabled, fog_disabled;
 
 uniform float px_per_g = 1.0;
 uniform float alpha = 1.0;
+uniform float mag_cut = 0.0;          // трассы к погасшим звёздам гаснут вместе с ними
 uniform float width_px = 1.1;
 uniform float trunk_width_px = 1.8;
 uniform float border_width_px = 1.2;
@@ -58,6 +59,7 @@ void fragment() {
 	}
 	if (v_kind < 0.5) {
 		a *= smoothstep(lod_from, lod_to, v_len_px);          // LOD: короткие трассы гаснут
+		a *= smoothstep(mag_cut, mag_cut + 0.12, v_seed);     // z = меньшая величина концов
 		if (v_extra > 0.5) {
 			a *= step(0.45, fract(along / 7.0));               // нейтральные трассы — пунктир
 		}
