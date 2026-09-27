@@ -31,6 +31,9 @@ var _drag := false
 var _press := Vector2.ZERO
 var _moved := false
 var _flight := {}
+var _touches := {}                  # индекс пальца -> позиция (для пинча на телефоне)
+var _pinch_d := 0.0
+var _pinch_mid := Vector2.ZERO
 var _lock_until := 0.0              # до этого момента (с) ввод зума игнорируется
 var _label_a := {}                  # звезда -> текущая прозрачность подписи (плавное появление)
 
@@ -251,8 +254,9 @@ func _input_locked() -> bool:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	_track_touches(event)
 	if _input_locked() and (event is InputEventMouseButton or event is InputEventMouseMotion
-			or event is InputEventGesture or event.is_action(&"ui_cancel")):
+			or event is InputEventGesture or event is InputEventScreenDrag or event.is_action(&"ui_cancel")):
 		get_viewport().set_input_as_handled()
 		_drag = false
 		if _flight.is_empty() and (event is InputEventMouseButton and (event as InputEventMouseButton).button_index
@@ -280,7 +284,9 @@ func _unhandled_input(event: InputEvent) -> void:
 						if hit.has("star"):
 							_prepare_system(hit.star)
 						_fly_to(hit.pos, hit.l)
-	elif event is InputEventMouseMotion and _drag:
+	elif event is InputEventScreenDrag and _touches.size() == 2:
+		_pinch()
+	elif event is InputEventMouseMotion and _drag and _touches.size() < 2:
 		var mm := event as InputEventMouseMotion
 		if mm.position.distance_to(_press) > 4.0:
 			_moved = true
@@ -293,6 +299,56 @@ func _unhandled_input(event: InputEvent) -> void:
 			view.dz -= mm.relative.y * k
 	elif event.is_action_pressed(&"ui_cancel"):
 		_zoom_out_level()
+
+
+## Пальцы на экране. Одним пальцем панорама и тап работают через эмуляцию мыши
+## (как перетаскивание и клик), двумя — пинч-зум и панорама.
+func _track_touches(event: InputEvent) -> void:
+	if event is InputEventScreenTouch:
+		var st := event as InputEventScreenTouch
+		if st.pressed:
+			_touches[st.index] = st.position
+		else:
+			_touches.erase(st.index)
+		_pinch_d = 0.0
+		if _touches.size() >= 2:
+			_drag = false
+			_moved = true               # отпускание пальцев после пинча — не тап
+	elif event is InputEventScreenDrag:
+		var sd := event as InputEventScreenDrag
+		if _touches.has(sd.index):
+			_touches[sd.index] = sd.position
+
+
+## Пинч: изменение расстояния между пальцами — зум к их середине (с той же логикой
+## автоперелётов, что у колеса), сдвиг середины — панорама.
+func _pinch() -> void:
+	var p: Array = _touches.values()
+	var d: float = p[0].distance_to(p[1])
+	var mid: Vector2 = (p[0] + p[1]) * 0.5
+	if _pinch_d > 0.0 and d > 1.0:
+		var k := view.z() / view.px_per_unit()
+		view.dx -= (mid.x - _pinch_mid.x) * k
+		view.dz -= (mid.y - _pinch_mid.y) * k
+		_zoom = {}                              # иначе старая точка зума откатит панораму
+		var step := log(d / _pinch_d)
+		if absf(step) > 0.0005:
+			goal_l -= step * 1.2
+			view.log_z = goal_l                 # пальцы — прямое управление, без сглаживания
+			_begin_zoom(mid, step > 0.0)
+	_pinch_d = d
+	_pinch_mid = mid
+
+
+## Системная кнопка «Назад» на Android: уровень выше, а с карты — выход.
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
+		if _input_locked():
+			return
+		if view.log_z < ZoomProfile.GAP_A.x - 0.5:
+			_zoom_out_level()
+		else:
+			get_tree().quit()
 
 
 ## Что под курсором. Возвращает {title, pos, l, r_px, screen}: l — масштаб, с которым к нему лететь.
@@ -665,6 +721,8 @@ func _setup_hud() -> void:
 
 	var help := _hud_label(11, Color(INK, 0.4))
 	help.text = "КОЛЕСО / Q E — ЗУМ     ПЕРЕТАСКИВАНИЕ / WASD — ПАНОРАМА     КЛИК — ЛЕТЕТЬ К ОБЪЕКТУ     ESC — УРОВЕНЬ ВЫШЕ"
+	if OS.has_feature("mobile"):
+		help.text = "ДВА ПАЛЬЦА — ЗУМ     ПЕРЕТАСКИВАНИЕ — ПАНОРАМА     ТАП — ЛЕТЕТЬ К ОБЪЕКТУ     НАЗАД — УРОВЕНЬ ВЫШЕ"
 	help.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	help.offset_left = 28
 	help.offset_top = -38
