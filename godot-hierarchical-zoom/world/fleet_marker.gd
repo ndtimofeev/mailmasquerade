@@ -1,12 +1,13 @@
 class_name FleetMarker
 extends Space
 ## Значок сражения у планеты: два треугольника постоянного размера на экране.
-## Стоит на орбите планеты, но не ближе 18 px к её иконке; при подлёте растворяется,
+## Стоит у планеты, но не ближе 16 px к краю её иконки; при подлёте растворяется,
 ## и на его месте проявляются настоящие корабли.
 
 var _holder := Node3D.new()
 var _out := Vector2.RIGHT
 var _true_off := 0.0          # настоящее расстояние от центра планеты, ед. системы
+var _planet: Planet
 
 
 func _init(planet: Planet, out: Vector2, true_off: float) -> void:
@@ -18,6 +19,7 @@ func _init(planet: Planet, out: Vector2, true_off: float) -> void:
 	top_level = true
 	_out = out
 	_true_off = true_off
+	_planet = planet
 	_holder.rotation.y = -out.angle()
 	add_child(_holder)
 	var tri := CylinderMesh.new()
@@ -38,11 +40,15 @@ func _init(planet: Planet, out: Vector2, true_off: float) -> void:
 func place(view: View) -> void:
 	super.place(view)
 	var pps := view.px(unit)
-	var off := maxf(_true_off, 18.0 / pps)
+	var off := _offset(view)
 	_holder.position = Vector3(_out.x * off, 0.0, _out.y * off)
 	_holder.scale = Vector3.ONE * (26.0 / (5.0 * pps))
 
 
+func _offset(view: View) -> float:
+	return maxf(_true_off, _planet.display_r(view) + 16.0 / view.px(unit))
+
+
 func icon_screen(view: View) -> Vector2:
-	var off := maxf(_true_off, 18.0 / view.px(unit))
+	var off := _offset(view)
 	return view.screen(bx, bz, ox + unit * _out.x * off, oz + unit * _out.y * off)

@@ -41,6 +41,12 @@ func _init(sys: StarSystem) -> void:
 			var t: String = ("Флагман" if row == 0 else "Фрегат %d" % (i + 1)) if team == 0 else "Рейдер %d" % (i + 1)
 			ships.append({"node": ship, "home": home, "team": team, "phase": _rng.randf() * TAU, "title": t})
 
+	# Свет звезды: локальная ось +X смотрит на звезду.
+	var sun := DirectionalLight3D.new()
+	sun.basis = Basis.looking_at(Vector3(-1.0, -0.9, 0.2).normalized(), Vector3.UP)
+	sun.light_energy = 1.3
+	add_child(sun)
+
 	var beam_mat := Draw.unlit(Color.WHITE, true)
 	beam_mat.vertex_color_use_as_albedo = true
 	fade(&"main", beam_mat)

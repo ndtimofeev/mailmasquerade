@@ -9,8 +9,8 @@ extends RefCounted
 
 const L_TOP := 4.9                        # ln z: вся галактика
 const L_BOTTOM := -25.0                   # ln z: отдельный корабль
-const GAP_A := Vector2(0.3, -7.0)         # (верх, низ) разрыва A в ln z
-const GAP_B := Vector2(-11.8, -17.3)      # (верх, низ) разрыва B
+const GAP_A := Vector2(0.3, -8.2)         # (верх, низ) разрыва A в ln z
+const GAP_B := Vector2(-10.2, -21.6)      # (верх, низ) разрыва B
 const STEP := 0.33                        # ln z на одно деление колеса в обычной зоне
 const GAP_STEP := 1.8                     # ... внутри разрыва
 const EDGE := 0.8                         # плавность смены скорости на краях разрыва

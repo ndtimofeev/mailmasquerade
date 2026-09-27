@@ -2,7 +2,8 @@ extends Node3D
 ## Непрерывный иерархический зум: карта 10 000 звёзд ⊃ система ⊃ планета/бой.
 ##
 ## Каждый кадр:
-##   1) колесо/полёт двигают параметр u; масштаб ln z = profile.l_of(u) (быстро в разрывах);
+##   1) колесо/полёт двигают параметр u; масштаб ln z = profile.l_of(u); разрывы между
+##      уровнями проходятся только автоматическим перелётом;
 ##   2) якорь View переносится на ближайшую звезду (плавающее начало координат);
 ##   3) система создаётся только у «своей» звезды и только в разрыве A;
 ##   4) все пространства ставятся относительно неподвижной камеры;
@@ -23,7 +24,7 @@ var context_star := -1              # звезда, к которой привя
 
 var u := 0.0
 var goal_u := 0.0
-var _zoom := {}                     # {pos, px0, l0, gap}: точка, которая держится под курсором
+var _zoom := {}                     # {pos, px}: точка, которая держится под курсором при зуме
 var _drag := false
 var _press := Vector2.ZERO
 var _moved := false
@@ -81,8 +82,7 @@ func _process(delta: float) -> void:
 	_overlay.queue_redraw()
 
 
-## Колесо двигает goal_u, u плавно догоняет. Зум держит точку под курсором,
-## а в разрыве ещё и подтягивает «цель» (звезду/планету) к центру экрана.
+## Колесо двигает goal_u, u плавно догоняет; точка под курсором остаётся на месте.
 func _update_view(delta: float) -> void:
 	if not _flight.is_empty():
 		_fly_step(delta)
@@ -90,19 +90,14 @@ func _update_view(delta: float) -> void:
 	var keys := float(Input.is_physical_key_pressed(KEY_E)) - float(Input.is_physical_key_pressed(KEY_Q))
 	if keys != 0.0:
 		goal_u += keys * 6.0 * delta
-		if _zoom.is_empty() or _zoom.gap == Vector2.ZERO:
-			_begin_zoom(view.size * 0.5, keys > 0.0)
+		_begin_zoom(view.size * 0.5, keys > 0.0)
+		if not _flight.is_empty():
+			return
 	goal_u = clampf(goal_u, 0.0, profile.u_max())
 	u = lerpf(u, goal_u, 1.0 - exp(-SMOOTH * delta))
 	view.log_z = profile.l_of(u)
-
 	if not _zoom.is_empty():
-		var px: Vector2 = _zoom.px0
-		var gap: Vector2 = _zoom.gap
-		if gap != Vector2.ZERO:
-			var t := clampf((view.log_z - gap.y) / maxf(_zoom.l0 - gap.y, 1e-6), 0.0, 1.0)
-			px = view.size * 0.5 + (_zoom.px0 - view.size * 0.5) * t
-		view.put(_zoom.pos, px)
+		view.put(_zoom.pos, _zoom.px)
 		if absf(goal_u - u) < 0.002 and keys == 0.0:
 			_zoom = {}
 
@@ -125,45 +120,59 @@ func _clamp_focus() -> void:
 		view.dz = f.y * k - view.az
 
 
-## Начало зума в точке p. Если впереди разрыв — выбираем, во что «нырять»:
-## звезда/планета плавно съезжает к центру экрана к концу разрыва.
-## Нет цели рядом — не пускаем в разрыв (иначе улетим в пустоту между звёздами).
+## Зум колесом в точке p (goal_u уже изменён).
+## Разрывы между уровнями колесом не проходятся. Когда колесо упирается в край разрыва,
+## включается автоматический перелёт: к звезде под курсором — пока её система не заполнит
+## экран; к бою или планете — пока они не заполнят экран. Обратно — так же, одним перелётом
+## на уровень выше. Если цели под курсором нет, зум просто останавливается у края разрыва.
 func _begin_zoom(p: Vector2, zoom_in: bool) -> void:
 	var l := view.log_z
-	_zoom = {"pos": view.pos_at(p), "px0": p, "l0": l, "gap": Vector2.ZERO}
-	if not zoom_in:
-		return
-	for g in [ZoomProfile.GAP_A, ZoomProfile.GAP_B]:
-		if l > g.y and profile.l_of(goal_u) < g.x:
+	var gl := profile.l_of(goal_u)
+	_zoom = {"pos": view.pos_at(p), "px": p}
+	for g: Vector2 in [ZoomProfile.GAP_A, ZoomProfile.GAP_B]:
+		var inside := l < g.x - 0.3 and l > g.y + 0.3
+		if zoom_in and (inside or (l > g.x - 0.3 and l > g.y and gl < g.x)):
 			var target := _attractor(p, g)
-			if target.is_empty():
+			if not target.is_empty() and target.l < l - 0.5:
+				_fly_to(target.pos, target.l, 2.6)
+				return
+			if not inside:
 				goal_u = minf(goal_u, profile.u_of(g.x))
-			else:
-				_zoom = {"pos": target.pos, "l0": l, "gap": g,
-					"px0": view.screen(target.pos[0], target.pos[1], target.pos[2], target.pos[3])}
-			return
+				return
+		if not zoom_in and (inside or (l < g.y + 0.3 and l < g.x and gl > g.y)):
+			if g == ZoomProfile.GAP_B and system != null:
+				_fly_to(system.pos(0, 0), log(_fit(StarSystem.RADIUS * StarSystem.UNIT)), 2.0)
+				return
+			if g == ZoomProfile.GAP_A and context_star >= 0:
+				_fly_to([galaxy.gx[context_star], galaxy.gz[context_star], 0.0, 0.0], g.x + 0.9, 2.0)
+				return
 
 
-## Цель для разрыва: звезда (A) или планета/бой/звезда системы (B) рядом с курсором.
+## Цель перелёта через разрыв рядом с курсором: {pos, l} — куда и с каким масштабом лететь.
+## Разрыв A — звезда (лететь, пока система не заполнит экран);
+## разрыв B — бой, планета или звезда системы.
 func _attractor(p: Vector2, gap: Vector2) -> Dictionary:
 	var radius := view.size.y * 0.35
 	if gap == ZoomProfile.GAP_A:
 		var g := view.pos_at(p)
 		var i := galaxy.nearest(g[0] + g[2], g[1] + g[3], radius * view.z() / view.px_per_unit())
-		return {} if i < 0 else {"pos": [galaxy.gx[i], galaxy.gz[i], 0.0, 0.0]}
+		if i < 0:
+			return {}
+		return {"pos": [galaxy.gx[i], galaxy.gz[i], 0.0, 0.0], "l": log(_fit(StarSystem.RADIUS * StarSystem.UNIT))}
 	if system == null:
 		return {}
+	var u_s := StarSystem.UNIT
+	var cands: Array = [[system.pos(0, 0), log(_fit(StarSystem.SUN_KM / StarSystem.KM_PER_UNIT * u_s * 3.0))]]
+	for pl in system.planets:
+		cands.append([pl.pos(0, 0), log(_fit(pl.true_r * u_s * 4.0))])
+	cands.append([system.battle_spot.pos, log(_fit(Battle.RADIUS * 0.55 * Battle.KM / StarSystem.KM_PER_UNIT * u_s))])
 	var best := {}
 	var best_d := radius
-	var cands: Array = [[system.pos(0, 0), 0.0]]
-	for pl in system.planets:
-		cands.append([pl.pos(0, 0), 0.0])
-	cands.append([system.battle_spot.pos, 0.0])
 	for c in cands:
 		var d := view.screen(c[0][0], c[0][1], c[0][2], c[0][3]).distance_to(p)
 		if d < best_d:
 			best_d = d
-			best = {"pos": c[0]}
+			best = {"pos": c[0], "l": c[1]}
 	return best
 
 
@@ -190,8 +199,9 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
 		if mb.pressed and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+			if not _flight.is_empty():
+				return                      # во время перелёта колесо не мешает анимации
 			var zoom_in := mb.button_index == MOUSE_BUTTON_WHEEL_UP
-			_flight = {}
 			goal_u += 1.0 if zoom_in else -1.0
 			_begin_zoom(mb.position, zoom_in)
 		elif mb.button_index == MOUSE_BUTTON_LEFT:
@@ -233,7 +243,7 @@ func _pick(p: Vector2) -> Dictionary:
 		var ms := system.marker.icon_screen(view)
 		if ms.distance_to(p) < 16.0 and (system.battle == null or not system.battle.visible or l > -19.5):
 			return {"title": system.battle_spot.title, "pos": system.battle_spot.pos,
-				"l": log(_fit(Battle.RADIUS * StarSystem.UNIT * Battle.KM / StarSystem.KM_PER_UNIT)), "r_px": 16.0, "screen": ms}
+				"l": log(_fit(Battle.RADIUS * 0.55 * StarSystem.UNIT * Battle.KM / StarSystem.KM_PER_UNIT)), "r_px": 16.0, "screen": ms}
 		for pl in system.planets:
 			var sp := pl.screen(view)
 			var r := pl.display_px(view)
@@ -259,11 +269,10 @@ func _fit(r_g: float) -> float:
 
 func _zoom_out_level() -> void:
 	var l := view.log_z
-	var here := view.pos_at(view.size * 0.5)
-	if l < ZoomProfile.GAP_B.y + 0.5 and system != null:
-		_fly_to(system.pos(0, 0), log(_fit(StarSystem.RADIUS * StarSystem.UNIT)))
-	elif l < ZoomProfile.GAP_A.y + 0.5:
-		_fly_to(here, 1.6)
+	if l < ZoomProfile.GAP_B.x - 0.5 and system != null:
+		_fly_to(system.pos(0, 0), log(_fit(StarSystem.RADIUS * StarSystem.UNIT)), 2.0)
+	elif l < ZoomProfile.GAP_A.x - 0.5 and context_star >= 0:
+		_fly_to([galaxy.gx[context_star], galaxy.gz[context_star], 0.0, 0.0], ZoomProfile.GAP_A.x + 0.9, 2.0)
 	else:
 		_fly_to([0.0, 0.0, 0.0, 0.0], ZoomProfile.L_TOP - 0.3)
 
@@ -272,7 +281,7 @@ func _zoom_out_level() -> void:
 
 ## Полёт линеен по u (а не по ln z) — поэтому разрывы пролетаются так же быстро, как колесом.
 ## Фокус движется пропорционально текущему масштабу: на экране скорость равномерная.
-func _fly_to(target: Array, l1: float) -> void:
+func _fly_to(target: Array, l1: float, duration := -1.0) -> void:
 	l1 = clampf(l1, ZoomProfile.L_BOTTOM, ZoomProfile.L_TOP)
 	var u1 := profile.u_of(l1)
 	var start := view.pos_at(view.size * 0.5)
@@ -287,7 +296,8 @@ func _fly_to(target: Array, l1: float) -> void:
 		w.append(w[k] + exp(profile.l_of(us)))
 	for k in w.size():
 		w[k] /= w[n]
-	_flight = {"t": 0.0, "T": clampf(0.9 + absf(u1 - u) * 0.05 + bump * 0.05, 0.9, 3.0),
+	var t := duration if duration > 0.0 else clampf(0.9 + absf(u1 - u) * 0.05 + bump * 0.05, 0.9, 3.0)
+	_flight = {"t": 0.0, "T": t,
 		"u0": u, "u1": u1, "bump": bump, "w": w, "from": start, "to": target}
 	_zoom = {}
 
@@ -326,7 +336,7 @@ func _draw_labels(size_max: float) -> void:
 	var screen := Rect2(Vector2(-40, -20), view.size + Vector2(80, 40))
 	var taken := {}
 	var placed := {}
-	if l > ZoomProfile.GAP_B.x - 1.0:
+	if l > ZoomProfile.GAP_A.y + 1.0:
 		# Кандидаты: при сильном зуме — только видимые (через сетку), иначе все по важности.
 		var f := view.focus_abs()
 		var half := view.size * 0.6 * view.z() / view.px_per_unit()
@@ -361,11 +371,14 @@ func _draw_labels(size_max: float) -> void:
 		var at := view.screen(galaxy.gx[i], galaxy.gz[i]) + Vector2(0, s * 0.5 + 5.0)
 		var big: bool = galaxy.mag[i] > 0.5
 		var col: Color = Galaxy.FACTIONS[galaxy.faction[i]] if galaxy.faction[i] >= 0 else INK
-		var a: float = _label_a[i] * (1.0 if big else 0.6) * Space.ramp(l, ZoomProfile.GAP_B.x, ZoomProfile.GAP_B.x + 2.0)
+		var a: float = _label_a[i] * (1.0 if big else 0.6) * Space.ramp(l, ZoomProfile.GAP_A.y + 1.0, ZoomProfile.GAP_A.y + 2.0)
 		_label(at, galaxy.names[i].to_upper() if big else galaxy.names[i], col, a, 11 if big else 9)
 
 	if system != null:
 		var sys_px := view.px(StarSystem.RADIUS * StarSystem.UNIT)
+		var sun_a := Space.ramp(-l, 6.8, 7.8) * Space.ramp(l, ZoomProfile.GAP_B.x - 1.5, ZoomProfile.GAP_B.x)
+		var sun_col: Color = Galaxy.FACTIONS[galaxy.faction[system.star]] if galaxy.faction[system.star] >= 0 else INK
+		_label(system.screen(view) + Vector2(0, StarSystem.SUN_ICON_PX + 6.0), system.title.to_upper(), sun_col, sun_a, 12)
 		for pl in system.planets:
 			var orbit_px := view.px(Vector2(pl.lx, pl.lz).length() * pl.unit)
 			var a := Space.ramp(sys_px, 220.0, 420.0) * Space.ramp(orbit_px, 30.0, 60.0)
@@ -419,7 +432,7 @@ func _update_hud() -> void:
 	var crumbs := ["ГАЛАКТИКА"]
 	if system != null and l < ZoomProfile.GAP_A.y + 1.0:
 		crumbs.append(system.title.to_upper())
-		if l < ZoomProfile.GAP_B.y + 0.5:
+		if l < ZoomProfile.GAP_B.x - 3.0:
 			var near_battle := system.battle != null and system.battle.visible
 			crumbs.append(system.battle_spot.title.to_upper() if near_battle else _nearest_planet_title())
 	elif context_star >= 0 and l < ZoomProfile.GAP_A.x:
