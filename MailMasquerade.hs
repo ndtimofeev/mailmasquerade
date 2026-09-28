@@ -31,8 +31,10 @@ import Network.HaskellNet.SMTP.Internal
 import Network.HaskellNet.SMTP.SSL (doSMTPSSL)
 import qualified Network.HaskellNet.SMTP.SSL as SMTP
 import Options.Generic
+import qualified System.IO as IO
 import System.Directory
 import System.Log.Logger
+import System.Log.Handler.Simple (streamHandler)
 import System.Log.Handler.Syslog
 
 -- a map from Message-IDs to sender addresses
@@ -42,6 +44,7 @@ type ReplyDB = Map ByteString ByteString
 
 data Arguments f = Arguments
 	{ verbose :: f ::: Bool   <#> "v" <?> "More logs"
+	, debug   :: f ::: Bool   <#> "d" <?> "Even more logs than -v, includes full raw mail headers (sensitive)"
 	, stdout  :: f ::: Bool   <#> "s" <?> "Put log to stdout only"
 	, config  :: f ::: String <#> "c" <?> "Path to config file"
 	} deriving Generic
@@ -71,19 +74,39 @@ instance ToJSON a => ToJSON (Config a) where
 	toEncoding = JSON.genericToEncoding JSON.defaultOptions
 
 
+-- logger namespaces, one per subsystem
+logConfig, logIMAP, logSMTP, logMail, logPing, logReplyDB :: String
+logConfig  = "mailmasquerade.config"
+logIMAP    = "mailmasquerade.imap"
+logSMTP    = "mailmasquerade.smtp"
+logMail    = "mailmasquerade.mail"
+logPing    = "mailmasquerade.mail.ping"
+logReplyDB = "mailmasquerade.replydb"
+
+
 main :: IO ()
 main = do
 	args <- unwrapRecord "MailMasquerade"
-	when (verbose args) $ do
-		updateGlobalLogger rootLoggerName (setLevel INFO)
-		infoM "" $ "Set verbose mode"
-	when (not (stdout args)) $ do
-		s <- openlog "mailmasquerade" [PID] USER INFO
-		updateGlobalLogger rootLoggerName (addHandler s)
+	let level
+		| debug args   = DEBUG
+		| verbose args = INFO
+		| otherwise    = WARNING
+	-- start from a clean slate: hslogger's root logger comes with a stderr
+	-- handler by default, and we want exactly one destination, not stderr
+	-- plus whatever we add below
+	updateGlobalLogger rootLoggerName (setLevel level . removeHandler)
+	if stdout args
+		then do
+			h <- streamHandler IO.stdout level
+			updateGlobalLogger rootLoggerName (addHandler h)
+		else do
+			s <- openlog "mailmasquerade" [PID] USER level
+			updateGlobalLogger rootLoggerName (addHandler s)
+	infoM logConfig $ "Log level set to " ++ show level
 	bs   <- B.readFile (config args)
 	let conf' = either error id $ JSON.eitherDecodeStrict bs >>= traverse (PB.parse (mailboxToSpec <$> PB.mailbox PB.defaultCharsets) . Data.ByteString.Lazy.Char8.pack)
 	-- conf <- either error id <$> JSON.eitherDecodeFileStrict (config args)
-	infoM "" $ "Opened configuration file " ++ config args
+	infoM logConfig $ "Opened configuration file " ++ config args
 	fetchMail conf'
 
 
@@ -126,28 +149,35 @@ isPing mail = maybe False ((== "ping") . Text.toCaseFold . Text.strip)
 
 
 tossMail :: Config PB.AddrSpec -> BL.ByteString -> Address -> IO ()
-tossMail conf mail to = doSMTPSSL (smtpServer conf) $ \conn -> do
+tossMail conf mail to = handle logSendFailure $ doSMTPSSL (smtpServer conf) $ \conn -> do
 	authSuccess <- SMTP.authenticate PLAIN (specToString $ username conf) (password conf) conn
 	when (not authSuccess) $ error "authentication failed"
 	sendMailData (specToAddress $ username conf) [to] (BL.toStrict mail) conn
+	infoM logSMTP $ "Sent mail to " ++ show (addressEmail to)
+	where
+	logSendFailure e = do
+		errorM logSMTP $ "Failed to send mail to " ++ show (addressEmail to) ++ ": " ++ show (e :: SomeException)
+		throwIO e
 
 
 fetchMail :: Config PB.AddrSpec -> IO ()
 fetchMail conf = do
-	forever $ handle (\e -> errorM "" $ show (e :: IOException)) $ do
+	forever $ handle (\e -> errorM logIMAP $ "IMAP session failed: " ++ show (e :: SomeException)) $ do
 		conn <- connectIMAPSSL (imapServer conf)
+		infoM logIMAP $ "Connected to " ++ imapServer conf
 		login conn (specToString $ username conf) (password conf)
+		infoM logIMAP $ "Logged in as " ++ specToString (username conf)
 		forever $ do
 			grabNewMail conf conn
 			idle conn $ 1000 * 60 * 29	-- rfc9051
-			infoM "" $ "got new mail maybe"
+			debugM logIMAP $ "IDLE returned, checking for new mail"
 
 
 grabNewMail :: Config PB.AddrSpec -> IMAPConnection -> IO ()
 grabNewMail conf conn = do
 	select conn "INBOX"
 	msgs <- search conn [UNFLAG Seen]
-	infoM "" $ "Unseen message IDs: " ++ show msgs
+	debugM logIMAP $ "Unseen message IDs: " ++ show msgs
 	forM_ msgs (fetch conn >=> handleNewMail conf)
 
 
@@ -163,38 +193,39 @@ mailboxToSpec (PB.Mailbox _ spec) = spec
 
 handleNewMail :: Config PB.AddrSpec -> ByteString -> IO ()
 handleNewMail conf mail = do
-	infoM "" $ "Lets handle new mail!"
 	case PB.parse (PB.message PB.mime) mail of
-		Left e -> errorM "" $ show e
+		Left e -> errorM logMail $ "Failed to parse incoming mail: " ++ show e
 		Right parsedMail@(PB.Message (PB.Headers hdrs) _) -> do
-			infoM "" $ unlines $ map show hdrs
-			let fromAddrs  = getFromAddrs parsedMail
+			let fromAddrs = getFromAddrs parsedMail
+			    msgid     = maybe "?" (Data.ByteString.Char8.unpack . PB.renderMessageID) $ view PB.headerMessageID parsedMail
+			    logMsg lvl msg = lvl logMail $ "[" ++ msgid ++ "] " ++ msg
+			logMsg infoM $ "Handling new mail from " ++ show fromAddrs
+			logMsg debugM $ unlines $ map show hdrs
 			if	| Just spec <- listToMaybe fromAddrs
 				, spec `elem` whitelist conf
 				, isPing parsedMail -> do
-					infoM "" $ "Got a PING from " ++ specToString spec ++ ", ponging back"
+					infoM logPing $ "[" ++ msgid ++ "] PING from " ++ specToString spec ++ ", ponging back"
 					let pong = set (PB.headerSubject PB.defaultCharsets) (Just "PONG")
 						     $ adjustMailForForwarding parsedMail (username conf) spec
 					tossMail conf (PB.renderMessage pong) $ specToAddress spec
 
 				| target conf `elem` fromAddrs -> do
-					infoM "" $ "This is remote mail"
+					logMsg infoM "Remote mail from target, looking up reply address"
 					maddr <- replyDBFetch parsedMail
 					let sendTo = maybe (defaultReplyTo conf) pure maddr
-					infoM "" $ "Let send mail to " ++ show sendTo
+					logMsg infoM $ "Replying to " ++ show sendTo
 					forM_ sendTo $ \addr -> do
-						let newMail@(PB.Message (PB.Headers hdrs) _) = adjustMailReply parsedMail (username conf) addr
-						infoM "" $ unlines $ map show hdrs
+						let newMail@(PB.Message (PB.Headers rewrittenHdrs) _) = adjustMailReply parsedMail (username conf) addr
+						logMsg debugM $ "Rewritten headers for " ++ specToString addr ++ ": " ++ unlines (map show rewrittenHdrs)
 						tossMail conf (PB.renderMessage newMail) $ specToAddress addr
 
 				| Just spec <- listToMaybe fromAddrs
 				, spec `elem` whitelist conf -> do
-					infoM "" $ "This is local mail"
-					infoM "" $ "Let send mail to " ++ specToString (target conf)
+					logMsg infoM $ "Local mail from whitelisted " ++ specToString spec ++ ", forwarding to " ++ specToString (target conf)
 					tossMail conf (PB.renderMessage $ adjustMailForForwarding parsedMail (username conf) (target conf)) $ specToAddress $ target conf
 					replyDBAdd parsedMail
 
-				| otherwise -> pure ()
+				| otherwise -> logMsg debugM "From neither target nor whitelist, dropping"
 
 
 replyDBFile = "replydb.bin"
@@ -208,22 +239,21 @@ replyDBRead = catch (do
 		replyDBBinary <- BL.readFile replyDBFile
 		pure $ decode replyDBBinary
 	) $ \e -> do
-		errorM "" $ show (e :: IOException)
+		warningM logReplyDB $ "Could not read " ++ replyDBFile ++ ", starting with an empty reply database: " ++ show (e :: SomeException)
 		pure mempty
 
 
 replyDBWrite :: ReplyDB -> IO ()
 replyDBWrite replyDB = do
 	BL.writeFile replyDBTemporaryFile $ encode replyDB
-	catch (renameFile replyDBFile replyDBBackupFile) $ \e -> errorM "" $ show (e :: IOException)
+	catch (renameFile replyDBFile replyDBBackupFile) $ \e -> warningM logReplyDB $ "Could not back up " ++ replyDBFile ++ ": " ++ show (e :: SomeException)
 	renameFile replyDBTemporaryFile replyDBFile
 
 
 replyDBFetch :: PB.Message ctx a -> IO (Maybe PB.AddrSpec)
 replyDBFetch mail = do
 	replyDB <- replyDBRead
-	infoM "" $ "InReplyTo: " ++ show (view PB.headerInReplyTo mail)
-	infoM "" $ "References: " ++ show (view PB.headerReferences mail)
+	debugM logReplyDB $ "InReplyTo: " ++ show (view PB.headerInReplyTo mail) ++ ", References: " ++ show (view PB.headerReferences mail)
 	pure $ do
 		bs <- asum $ map (\mid -> Map.lookup (PB.renderMessageID mid) replyDB) $ L.nub $ view PB.headerInReplyTo mail ++ view PB.headerReferences mail
 		either error pure $ PB.parse (mailboxToSpec <$> PB.mailbox PB.defaultCharsets) bs
