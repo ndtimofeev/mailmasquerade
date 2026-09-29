@@ -171,7 +171,7 @@ fetchMail conf = do
 		infoM logIMAP $ "Logged in as " ++ specToString (username conf)
 		forever $ do
 			grabNewMail conf conn
-			idle conn $ 1000 * 60 * 10	-- shorter than typical NAT/firewall idle timeouts (RFC 9051 permits up to 29 min)
+			idle conn $ 1000 * 30	-- IDLE's wait is silent on the wire; 30s keeps us well under whatever NAT/firewall/conntrack idle timeout is killing longer waits (RFC 9051 permits up to 29 min)
 			debugM logIMAP $ "IDLE returned, checking for new mail"
 	where
 	-- a mid-IDLE connection reset is routine (NAT/firewall/server dropped an
