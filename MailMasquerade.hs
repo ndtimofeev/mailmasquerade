@@ -33,6 +33,8 @@ import qualified Network.HaskellNet.SMTP.SSL as SMTP
 import Options.Generic
 import qualified System.IO as IO
 import System.Directory
+import GHC.IO.Exception (IOErrorType(ResourceVanished))
+import System.IO.Error (ioeGetErrorType)
 import System.Log.Logger
 import System.Log.Handler.Simple (streamHandler)
 import System.Log.Handler.Syslog
@@ -162,15 +164,24 @@ tossMail conf mail to = handle logSendFailure $ doSMTPSSL (smtpServer conf) $ \c
 
 fetchMail :: Config PB.AddrSpec -> IO ()
 fetchMail conf = do
-	forever $ handle (\e -> errorM logIMAP $ "IMAP session failed: " ++ show (e :: SomeException)) $ do
+	forever $ handle logSessionFailure $ do
 		conn <- connectIMAPSSL (imapServer conf)
 		infoM logIMAP $ "Connected to " ++ imapServer conf
 		login conn (specToString $ username conf) (password conf)
 		infoM logIMAP $ "Logged in as " ++ specToString (username conf)
 		forever $ do
 			grabNewMail conf conn
-			idle conn $ 1000 * 60 * 29	-- rfc9051
+			idle conn $ 1000 * 60 * 10	-- shorter than typical NAT/firewall idle timeouts (RFC 9051 permits up to 29 min)
 			debugM logIMAP $ "IDLE returned, checking for new mail"
+	where
+	-- a mid-IDLE connection reset is routine (NAT/firewall/server dropped an
+	-- idle socket) and self-heals via the reconnect above, so it doesn't
+	-- warrant ERROR-level attention the way other session failures do
+	logSessionFailure :: SomeException -> IO ()
+	logSessionFailure e = case fromException e of
+		Just ioe | ioeGetErrorType ioe == ResourceVanished ->
+			warningM logIMAP $ "IMAP connection reset, reconnecting: " ++ show (ioe :: IOException)
+		_ -> errorM logIMAP $ "IMAP session failed: " ++ show e
 
 
 grabNewMail :: Config PB.AddrSpec -> IMAPConnection -> IO ()
