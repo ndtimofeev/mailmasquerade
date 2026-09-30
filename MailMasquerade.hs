@@ -188,18 +188,30 @@ fetchMail conf = do
 
 grabNewMail :: Config PB.AddrSpec -> IMAPConnection -> IO ()
 grabNewMail conf conn = do
+	debugM logIMAP "Selecting INBOX"
 	select conn "INBOX"
+	debugM logIMAP "Searching for unseen messages"
 	msgs <- search conn [UNFLAG Seen]
 	debugM logIMAP $ "Unseen message IDs: " ++ show msgs
 	-- fetchPeek (BODY.PEEK[]) doesn't mark the message Seen the way fetch
 	-- (BODY[]) does; we mark it ourselves only once handleNewMail has
 	-- actually finished with it, so a connection dying mid-fetch or
 	-- mid-send leaves the message Unseen and it gets retried next cycle
-	-- instead of silently vanishing
+	-- instead of silently vanishing.
+	--
+	-- The debug lines bracketing each step below are deliberately kept
+	-- (not simplified away) while we're chasing intermittent IMAP session
+	-- failures: whatever debug line is the *last* one logged before a
+	-- session dies pinpoints which step it died in. The gap between
+	-- "sent mail to" (logged by tossMail, inside handleNewMail) and
+	-- "Marked UID _ Seen" below is the one genuinely risky window - a
+	-- death there means a real duplicate send, not just a retried fetch.
 	forM_ msgs $ \uid -> do
+		debugM logIMAP $ "Fetching UID " ++ show uid
 		mail <- fetchPeek conn uid
 		handleNewMail conf mail
 		store conn uid (PlusFlags [Seen])
+		debugM logIMAP $ "Marked UID " ++ show uid ++ " Seen"
 
 
 addrToSpec :: PB.Address -> [PB.AddrSpec]
