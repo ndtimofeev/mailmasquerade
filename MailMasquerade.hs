@@ -191,7 +191,15 @@ grabNewMail conf conn = do
 	select conn "INBOX"
 	msgs <- search conn [UNFLAG Seen]
 	debugM logIMAP $ "Unseen message IDs: " ++ show msgs
-	forM_ msgs (fetch conn >=> handleNewMail conf)
+	-- fetchPeek (BODY.PEEK[]) doesn't mark the message Seen the way fetch
+	-- (BODY[]) does; we mark it ourselves only once handleNewMail has
+	-- actually finished with it, so a connection dying mid-fetch or
+	-- mid-send leaves the message Unseen and it gets retried next cycle
+	-- instead of silently vanishing
+	forM_ msgs $ \uid -> do
+		mail <- fetchPeek conn uid
+		handleNewMail conf mail
+		store conn uid (PlusFlags [Seen])
 
 
 addrToSpec :: PB.Address -> [PB.AddrSpec]
