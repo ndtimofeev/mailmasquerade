@@ -33,7 +33,7 @@ import qualified Network.HaskellNet.SMTP.SSL as SMTP
 import Options.Generic
 import qualified System.IO as IO
 import System.Directory
-import GHC.IO.Exception (IOErrorType(ResourceVanished))
+import GHC.IO.Exception (IOErrorType(ResourceVanished, EOF))
 import System.IO.Error (ioeGetErrorType)
 import System.Log.Logger
 import System.Log.Handler.Simple (streamHandler)
@@ -174,13 +174,15 @@ fetchMail conf = do
 			idle conn $ 1000 * 30	-- IDLE's wait is silent on the wire; 30s keeps us well under whatever NAT/firewall/conntrack idle timeout is killing longer waits (RFC 9051 permits up to 29 min)
 			debugM logIMAP $ "IDLE returned, checking for new mail"
 	where
-	-- a mid-IDLE connection reset is routine (NAT/firewall/server dropped an
-	-- idle socket) and self-heals via the reconnect above, so it doesn't
-	-- warrant ERROR-level attention the way other session failures do
+	-- a connection dying mid-IDLE is routine, whether the peer/a middlebox
+	-- kills it outright (ResourceVanished, i.e. RST) or just closes it
+	-- (EOF, i.e. FIN) while we're reading - either way it self-heals via
+	-- the reconnect above, so it doesn't warrant ERROR-level attention the
+	-- way other session failures do
 	logSessionFailure :: SomeException -> IO ()
 	logSessionFailure e = case fromException e of
-		Just ioe | ioeGetErrorType ioe == ResourceVanished ->
-			warningM logIMAP $ "IMAP connection reset, reconnecting: " ++ show (ioe :: IOException)
+		Just ioe | ioeGetErrorType ioe `elem` [ResourceVanished, EOF] ->
+			warningM logIMAP $ "IMAP connection closed, reconnecting: " ++ show (ioe :: IOException)
 		_ -> errorM logIMAP $ "IMAP session failed: " ++ show e
 
 
